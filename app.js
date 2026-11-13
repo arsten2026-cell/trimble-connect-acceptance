@@ -11,7 +11,7 @@
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   let lang = (() => { try { return localStorage.getItem("arsten.acceptance.lang") || "bg"; } catch { return "bg"; } })();
   const L2 = (b, e) => (lang === "bg" ? b : e);
-  const state = { api: null, client: null, project: null, user: "", access: null, lib: null, acc: [], photos: new Map(), tab: "open", filter: "", urls: new Map(), open: null, busy: false };
+  const state = { api: null, client: null, project: null, user: "", access: null, lib: null, acc: [], photos: new Map(), tab: "open", filter: "", urls: new Map(), open: null, busy: false, coloured: false, colourStep: "all" };
   const setStatus = (t, bad) => { $("status").textContent = t || ""; $("status").className = "status" + (bad ? " bad" : ""); };
   const errText = (e) => (e && (e.message || e.toString())) || String(e);
   const guarded = (fn) => Promise.resolve().then(fn).catch((e) => { console.error(e); setStatus(errText(e), true); });
@@ -46,6 +46,7 @@
     const open = state.acc.filter((r) => r.status === "open").length;
     setStatus(L2(`${state.acc.length} заявки · ${open} чакат`, `${state.acc.length} requests · ${open} waiting`));
     render();
+    if (state.coloured) await applyColours();
   }
 
   async function urlOf(fileId) {
@@ -75,6 +76,36 @@
     Object.assign(r, props);
     setStatus(`${r.pour} · ${ACC.STEPS[r.step][lang]}: ${ACC.STATUS[decision][lang]}`);
     render();
+    if (state.coloured) await applyColours();
+  }
+
+  // ---------- colours in the model ----------
+  // За приемане orange, Приети green, Приети със забележки light green, Не се приемат red; everything else grey, see-through.
+  const LEGEND = [["open", "За приемане", "Awaiting acceptance"], ["approved", "Приети", "Accepted"], ["remarks", "Приети със забележки", "Accepted with remarks"], ["rejected", "Не се приемат", "Rejected"]];
+  const OTHER = { color: "#BDBDBD", opacity: 0.18 };
+  async function applyColours() {
+    const v = state.api.viewer;
+    const all = [];
+    for (const m of (await v.getObjects()) || []) if ((m.objects || []).length) all.push({ modelId: m.modelId, objectRuntimeIds: m.objects.map((o) => o.id) });
+    if (!state.coloured) { if (all.length) await v.setObjectState({ modelObjectIds: all }, { color: "reset", opacity: 1 }); return; }
+    if (all.length) await v.setObjectState({ modelObjectIds: all }, OTHER);
+    let shown = 0, missing = 0;
+    for (const [status] of LEGEND) {
+      const byModel = new Map();
+      for (const p of ACC.pourStates(state.acc, state.colourStep).filter((x) => x.status === status)) {
+        for (const o of p.objects) { if (!byModel.has(o.modelId)) byModel.set(o.modelId, []); byModel.get(o.modelId).push(o.guid); }
+      }
+      const sel = [];
+      for (const [modelId, guids] of byModel) {
+        try {
+          const ids = (await v.convertToObjectRuntimeIds(modelId, guids)) || [];
+          const ok = ids.filter((x) => x != null); missing += guids.length - ok.length;
+          if (ok.length) sel.push({ modelId, objectRuntimeIds: ok });
+        } catch { missing += guids.length; }
+      }
+      if (sel.length) { await v.setObjectState({ modelObjectIds: sel }, { color: ACC.STATUS[status].colour, opacity: 1 }); shown += sel.reduce((n, s) => n + s.objectRuntimeIds.length, 0); }
+    }
+    if (missing && !shown) setStatus(L2("Обектите на заявките не са в заредените модели (заредете модела с тактовете).", "The requests' objects are not in the loaded models (load the pour model)."), true);
   }
 
   // ---------- UI ----------
@@ -108,6 +139,12 @@
     $("selLang").value = lang;
     $("filter").placeholder = L2("Филтър (такт)", "Filter (pour)");
     $("btnReload").textContent = L2("Обнови", "Refresh");
+    $("lblColour").textContent = L2("Оцвети по приемане", "Colour by acceptance");
+    $("chkColour").checked = state.coloured;
+    $("selStep").innerHTML = [["all", "Всички етапи", "All steps"], ["formwork", "Кофраж", "Formwork"], ["rebar", "Армировка", "Rebar"]]
+      .map(([id, bg, en]) => `<option value="${id}"${state.colourStep === id ? " selected" : ""}>${lang === "bg" ? bg : en}</option>`).join("");
+    $("legend").innerHTML = LEGEND.map(([s, bg, en]) => `<span><span class="sw" style="background:${ACC.STATUS[s].colour}"></span>${lang === "bg" ? bg : en}</span>`).join("")
+      + `<span><span class="sw" style="background:${OTHER.color};opacity:.5"></span>${L2("Без заявка (прозрачно)", "No request (see-through)")}</span>`;
     $("tabs").innerHTML = TABS.map(([id, bg, en]) => `<button class="small ${state.tab === id ? "on" : ""}" data-tab="${id}">${lang === "bg" ? bg : en}${id === "open" ? ` (${state.acc.filter((r) => r.status === "open").length})` : ""}</button>`).join("");
     $("who").textContent = canApprove() ? L2(`Приемате като ${state.user} (4.1-STRUCTURAL DESIGNER).`, `You decide as ${state.user} (4.1-STRUCTURAL DESIGNER).`)
       : L2("Само преглед: приема групата 4.1-STRUCTURAL DESIGNER.", "View only: the group 4.1-STRUCTURAL DESIGNER decides.");
@@ -146,6 +183,8 @@
     }
     await load();
   });
+  $("chkColour").onchange = (e) => guarded(async () => { state.coloured = e.target.checked; await applyColours(); });
+  $("selStep").onchange = (e) => guarded(async () => { state.colourStep = e.target.value; if (state.coloured) await applyColours(); });
   $("selLang").onchange = (e) => { lang = e.target.value; try { localStorage.setItem("arsten.acceptance.lang", lang); } catch {} render(); };
 
   async function start(api, client) {
@@ -160,7 +199,12 @@
   }
   window.AcceptanceApp = { start, state };
 
-  function onEvent(event, data) { if (event === "extension.accessToken") onToken(data); }
+  let reloadTimer = null;
+  function onEvent(event, data) {
+    if (event === "extension.accessToken") onToken(data);
+    if (event === "viewer.onModelReset") { state.coloured = false; $("chkColour").checked = false; }
+    if (event === "viewer.onModelStateChanged" && state.client && state.coloured) { clearTimeout(reloadTimer); reloadTimer = setTimeout(() => guarded(applyColours), 1500); }
+  }
   if (window.parent === window) {
     if (/[?&]demo\b/.test(location.search)) { const s = document.createElement("script"); s.src = "demo.js?t=" + Date.now(); document.body.appendChild(s); }
     else setStatus("Not inside Trimble Connect. Add this extension to a project and open it from the 3D viewer side panel.", true);
