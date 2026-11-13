@@ -37,7 +37,7 @@
     if (!found.lib) return setStatus(L2("Няма библиотека CIP/Монолитно в проекта.", "No library CIP/Монолитно in the project."), true);
     state.lib = found.lib;
     const a = await state.client.listAll(state.lib.id, ACC.DEF_ID, ACC.prefix(state.project.id));
-    state.acc = [...a].map(([link, p]) => Object.assign({ link }, p));
+    state.acc = [...a].map(([link, p]) => Object.assign({ link }, p)).filter(ACC.valid);
     try {
       const ph = await state.client.listAll(state.lib.id, PH.DEF_ID, PH.photoPrefix(state.project.id));
       state.photos = new Map([...ph].map(([, p]) => [p.file_id, p]));
@@ -107,6 +107,7 @@
     $("title").textContent = L2("Приемане", "Acceptance");
     $("selLang").value = lang;
     $("filter").placeholder = L2("Филтър (такт)", "Filter (pour)");
+    $("btnReload").textContent = L2("Обнови", "Refresh");
     $("tabs").innerHTML = TABS.map(([id, bg, en]) => `<button class="small ${state.tab === id ? "on" : ""}" data-tab="${id}">${lang === "bg" ? bg : en}${id === "open" ? ` (${state.acc.filter((r) => r.status === "open").length})` : ""}</button>`).join("");
     $("who").textContent = canApprove() ? L2(`Приемате като ${state.user} (4.1-STRUCTURAL DESIGNER).`, `You decide as ${state.user} (4.1-STRUCTURAL DESIGNER).`)
       : L2("Само преглед: приема групата 4.1-STRUCTURAL DESIGNER.", "View only: the group 4.1-STRUCTURAL DESIGNER decides.");
@@ -134,6 +135,17 @@
     else if (t.dataset.d) guarded(() => decide(state.acc.find((r) => r.link === t.dataset.l), t.dataset.d));
   });
   $("filter").oninput = (e) => { state.filter = e.target.value; const pos = e.target.selectionStart; render(); $("filter").focus(); $("filter").setSelectionRange(pos, pos); };
+  // "Обнови": reload the requests and re-check the access (cached 10 min), e.g. after joining 4.1-STRUCTURAL DESIGNER
+  $("btnReload").onclick = () => guarded(async () => {
+    if (!window.ARSTEN_DEMO) {
+      try { for (const k of Object.keys(sessionStorage)) if (k.startsWith("arsten.access.")) sessionStorage.removeItem(k); } catch {}
+      if (ArstenAccess._memo && ArstenAccess._memo.clear) ArstenAccess._memo.clear();
+      const access = await ArstenAccess.check({ api: state.api, getToken, app: "acceptance" });
+      if (!access.allowed) { ArstenAccess.renderDenied(document.body, lang, access); return; }
+      state.access = access;
+    }
+    await load();
+  });
   $("selLang").onchange = (e) => { lang = e.target.value; try { localStorage.setItem("arsten.acceptance.lang", lang); } catch {} render(); };
 
   async function start(api, client) {
