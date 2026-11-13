@@ -157,9 +157,10 @@
     const b = $("lightbox");
     if (!state.open) { b.innerHTML = ""; return; }
     const p = state.photos.get(state.open) || {};
-    b.innerHTML = `<div class="box"><img alt="" data-src="${esc(state.open)}"><div class="meta">${esc(p.labels || "")}${p.caption ? " – " + esc(p.caption) : ""}<br>${esc(String(p.taken || "").replace("T", " ").slice(0, 16))} · ${esc(p.by || "")}</div>
-      <div class="bar"><button class="small" id="boxClose">${L2("Затвори", "Close")}</button></div></div>`;
-    urlOf(state.open).then((u) => { const i = b.querySelector("img"); if (i && u) i.src = u; });
+    b.innerHTML = `<div class="box"><div class="zview" title="${esc(L2("Щракнете за увеличение", "Click to zoom"))}"><img alt="" data-src="${esc(state.open)}"></div><div class="meta">${esc(p.labels || "")}${p.caption ? " – " + esc(p.caption) : ""}<br>${esc(String(p.taken || "").replace("T", " ").slice(0, 16))} · ${esc(p.by || "")}</div>
+      <div class="bar"><button class="small" id="boxClose">${L2("Затвори", "Close")}</button><a class="open" id="boxOpen" target="_blank" rel="noopener" href="#">${L2("Отвори в нов прозорец", "Open in new window")}</a></div></div>`;
+    urlOf(state.open).then((u) => { const i = b.querySelector("img"); if (i && u) { i.src = u; const a = $("boxOpen"); if (a) a.href = u; } });
+    PH.wireZoom(b.querySelector(".zview"));
     $("boxClose").onclick = () => { state.open = null; renderBox(); };
   }
   document.addEventListener("click", (e) => {

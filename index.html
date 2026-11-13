@@ -37,7 +37,11 @@
   .th { aspect-ratio:1; background:#ece8df; cursor:pointer; overflow:hidden; border:0; padding:0; }
   .th img { width:100%; height:100%; object-fit:cover; display:block; }
   .box { position:fixed; inset:0; background:rgba(0,0,0,.88); z-index:50; display:flex; flex-direction:column; padding:8px; color:#fff; }
-  .box img { flex:1; min-height:0; object-fit:contain; width:100%; }
+  .box .zview { flex:1; min-height:0; overflow:hidden; display:flex; cursor:zoom-in; }
+  .box .zview img { flex:1; min-height:0; min-width:0; object-fit:contain; width:100%; }
+  .box .zview.zoom { display:block; overflow:auto; cursor:zoom-out; }
+  .box .zview.zoom img { width:auto; height:auto; max-width:none; flex:none; }
+  .box a.open { font-size:12px; padding:2px 8px; background:#fff; color:#1f1f1f; border:1px solid #fff; text-decoration:none; }
   .box .meta { font-size:12px; padding:6px 0; }
   .box button { background:#fff; color:#1f1f1f; border-color:#fff; }
   .view { background:var(--panel); border:1px solid var(--line); padding:6px 8px; margin:6px 0; }
@@ -62,8 +66,8 @@
 <script src="https://cdn.jsdelivr.net/npm/trimble-connect-workspace-api@0.3.38/dist/iife/trimbleconnect.workspace.api.js" integrity="sha384-lFiNt/56q6HnUNbuy0WHO3NP6BkQjY4EH8+5eELYVfnhkB42snRTmSa3UOAlX9gg" crossorigin="anonymous"></script>
 <script src="arsten-access.js?v=8"></script>
 <script src="psetapi.js?v=5"></script>
-<script src="arsten-photos.js?v=4"></script>
+<script src="arsten-photos.js?v=5"></script>
 <script src="arsten-acceptance.js?v=4"></script>
-<script src="app.js?v=3"></script>
+<script src="app.js?v=4"></script>
 </body>
 </html>
