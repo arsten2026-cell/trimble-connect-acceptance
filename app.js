@@ -43,6 +43,9 @@
     try {
       const ph = await state.client.listAll(state.lib.id, PH.DEF_ID, PH.photoPrefix(state.project.id));
       state.photos = new Map([...ph].map(([, p]) => [p.file_id, p]));
+      // photos deleted directly in Connect: their file is gone, so they are treated as deleted here
+      const exist = await PH.existingIds(core(), state.project.id, [...state.photos.values()]);
+      if (exist) for (const p of state.photos.values()) if (!p.deleted && p.file_id && !exist.has(p.file_id)) { p.deleted = true; p.gone = true; }
     } catch (e) { console.error(e); }
     $("main").hidden = false;
     const open = state.acc.filter((r) => r.status === "open").length;
@@ -136,7 +139,9 @@
   }
   function card(r) {
     const s = ACC.STATUS[r.status] || ACC.STATUS.open;
-    const photos = ACC.ids(r.photos).filter((id) => { const p = state.photos.get(id); return !p || !p.deleted; });
+    const all = ACC.ids(r.photos);
+    const photos = all.filter((id) => { const p = state.photos.get(id); return !p || !p.deleted; });
+    const goneN = all.length - photos.length;
     const decideBox = r.status === "open" && canApprove()
       ? `<textarea id="c_${esc(r.link)}" placeholder="${esc(L2("Коментар (задължителен за забележки / отказ)", "Comment (required for remarks / rejection)"))}"></textarea>
          <div class="bar"><button class="small ok" data-d="approved" data-l="${esc(r.link)}">${L2("Одобрено", "Approve")}</button>
@@ -146,6 +151,7 @@
       <div class="hd"><b>${esc(r.pour)}</b><span>${esc(ACC.STEPS[r.step] ? ACC.STEPS[r.step][lang] : r.step)}</span><span class="st">${esc(s[lang])}</span></div>
       <div class="sub">${L2("Заявено", "Requested")}: ${esc(r.requested)} · ${esc(r.requested_by)}${r.sent ? ` · ${L2("изпратено", "sent")} ${esc(r.sent)}` : ` · ${L2("неизпратено", "not sent")}`}</div>
       ${r.decided ? `<div class="sub">${esc(s[lang])}: ${esc(r.decided)} · ${esc(r.decided_by)}${r.comment ? ` – „${esc(r.comment)}“` : ""}</div>` : ""}
+      ${goneN ? `<div class="sub bad">${goneN} ${L2("снимки са изтрити", "photos were deleted")}</div>` : ""}
       <div class="grid">${photos.map((id) => `<button class="th" data-ph="${esc(id)}" data-l="${esc(r.link)}"><img alt="" data-src="${esc(id)}"></button>`).join("") || `<span class="sub">${L2("Няма снимки.", "No photos.")}</span>`}</div>
       <div class="bar"><button class="small secondary" data-show="${esc(r.link)}">${L2("Покажи в модела", "Show in model")}</button>
         <button class="small secondary" data-log="${esc(r.link)}">${L2("История", "History")}</button></div>
