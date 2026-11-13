@@ -159,7 +159,7 @@
       ${decideBox}</div>`;
   }
   function render() {
-    $("title").textContent = L2("Приемане", "Acceptance");
+    $("title").textContent = L2("Авторски надзор", "Design supervision");
     $("selLang").value = lang;
     $("filter").placeholder = L2("Филтър (такт)", "Filter (pour)");
     $("btnReload").textContent = L2("Обнови", "Refresh");
