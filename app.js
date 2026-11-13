@@ -37,7 +37,9 @@
     if (!found.lib) return setStatus(L2("Няма библиотека CIP/Монолитно в проекта.", "No library CIP/Монолитно in the project."), true);
     state.lib = found.lib;
     const a = await state.client.listAll(state.lib.id, ACC.DEF_ID, ACC.prefix(state.project.id));
-    state.acc = [...a].map(([link, p]) => Object.assign({ link }, p)).filter(ACC.valid);
+    let dec = new Map();
+    try { dec = await state.client.listAll(state.lib.id, ACC.DEC_ID, ACC.prefix(state.project.id)); } catch (e) { if (e.status !== 404) throw e; }
+    state.acc = ACC.merge([...a].map(([link, p]) => Object.assign({ link }, p)), dec).filter(ACC.valid);
     try {
       const ph = await state.client.listAll(state.lib.id, PH.DEF_ID, PH.photoPrefix(state.project.id));
       state.photos = new Map([...ph].map(([, p]) => [p.file_id, p]));
@@ -78,16 +80,18 @@
     try {
       // decide on the FRESH server copy; if photos or status changed since it was shown, show it again first
       const got = await state.client.readMany(state.lib.id, ACC.DEF_ID, [r.link]);
-      const fresh = got.get(r.link);
-      if (!fresh || fresh.status !== r.status || (fresh.photos || "") !== (r.photos || "")) {
+      let dec = new Map();
+      try { dec = await state.client.readMany(state.lib.id, ACC.DEC_ID, [r.link]); } catch (e) { if (e.status !== 404) throw e; }
+      const fresh = got.has(r.link) ? ACC.merge([Object.assign({ link: r.link }, got.get(r.link))], dec)[0] : null;
+      if (!fresh || fresh.status !== r.status || fresh.round !== r.round || (fresh.photos || "") !== (r.photos || "")) {
         await load();
         return setStatus(L2("Заявката е променена междувременно (нови снимки или решение) – прегледайте я отново.", "The request changed meanwhile (new photos or a decision) – please look again."), true);
       }
-      props = ACC.decide(Object.assign({ link: r.link }, fresh), { decision, comment, by: state.user });
-      const rec = Object.assign({}, props); delete rec.link;
-      await state.client.replace(state.lib.id, ACC.DEF_ID, r.link, rec);
+      // the decision goes to its own definition, where only the 4.1 group has Edit (server-side lock)
+      props = ACC.decide(fresh, { decision, comment, by: state.user });
+      await state.client.replace(state.lib.id, ACC.DEC_ID, r.link, props);
     } finally { busy = false; }
-    Object.assign(r, props);
+    Object.assign(r, { status: props.status, decided: props.decided, decided_by: props.decided_by, comment: props.comment, declog: props.log });
     setStatus(`${r.pour} · ${ACC.STEPS[r.step][lang]}: ${ACC.STATUS[decision][lang]}`);
     render();
     if (state.coloured) await applyColours();
@@ -145,7 +149,7 @@
       <div class="grid">${photos.map((id) => `<button class="th" data-ph="${esc(id)}" data-l="${esc(r.link)}"><img alt="" data-src="${esc(id)}"></button>`).join("") || `<span class="sub">${L2("Няма снимки.", "No photos.")}</span>`}</div>
       <div class="bar"><button class="small secondary" data-show="${esc(r.link)}">${L2("Покажи в модела", "Show in model")}</button>
         <button class="small secondary" data-log="${esc(r.link)}">${L2("История", "History")}</button></div>
-      <div class="log" id="log_${esc(r.link)}" hidden>${esc(r.log)}</div>
+      <div class="log" id="log_${esc(r.link)}" hidden>${esc([r.log, r.declog].filter(Boolean).join("\n"))}</div>
       ${decideBox}</div>`;
   }
   function render() {
