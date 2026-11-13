@@ -116,16 +116,24 @@
 
   // ---------- image ----------
   async function prepareImage(file) {
-    const buf = await file.arrayBuffer();
+    const buf = await file.slice(0, 256 * 1024).arrayBuffer();   // EXIF sits at the start; no need to read the whole photo
     const taken = exifDate(buf) || (file.lastModified ? new Date(file.lastModified) : new Date());
     let bmp;
-    try { bmp = await createImageBitmap(file, { imageOrientation: "from-image" }); } catch { bmp = await createImageBitmap(file); }
+    try { bmp = await createImageBitmap(file, { imageOrientation: "from-image" }); }
+    catch {
+      try { bmp = await createImageBitmap(file); }
+      catch { throw new Error(/\.hei[cf]$/i.test(file.name) || /hei[cf]/i.test(file.type) ? "HEIC не се поддържа на този компютър – изберете JPEG / HEIC not supported here, use JPEG" : "Файлът не може да се отвори като снимка / not a readable image"); }
+    }
     const k = Math.min(1, MAX_PX / Math.max(bmp.width, bmp.height));
     const w = Math.round(bmp.width * k), h = Math.round(bmp.height * k);
     const c = document.createElement("canvas"); c.width = w; c.height = h;
-    c.getContext("2d").drawImage(bmp, 0, 0, w, h);
+    const ctx = c.getContext("2d");
+    if (!ctx) { if (bmp.close) bmp.close(); throw new Error("Няма памет за снимката – качете по-малко наведнъж / out of memory, upload fewer at once"); }
+    ctx.drawImage(bmp, 0, 0, w, h);
     if (bmp.close) bmp.close();
     const blob = await new Promise((res) => c.toBlob(res, "image/jpeg", JPEG_Q));
+    c.width = 0; c.height = 0;   // give the canvas memory back at once (iOS has a total canvas limit)
+    if (!blob) throw new Error("Снимката не можа да се компресира – опитайте пак / could not compress the photo");
     return { blob, taken, w, h, originalSize: file.size, size: blob.size, name: file.name };
   }
 
@@ -156,6 +164,8 @@
   .ph-day{font-size:11px;font-weight:600;color:var(--muted,#6b6b6b);margin:8px 0 3px}
   .ph-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(72px,1fr));gap:4px}
   .ph-th{position:relative;aspect-ratio:1;background:#ece8df;cursor:pointer;overflow:hidden;border:0;padding:0}
+  .ph-th.ph-pick{outline:3px solid var(--accent,#E37424);outline-offset:-3px}
+  .ph-th.ph-pick::after{content:"✓";position:absolute;top:2px;right:4px;color:#fff;background:var(--accent,#E37424);font-size:11px;padding:0 3px}
   .ph-th img{width:100%;height:100%;object-fit:cover;display:block}
   .ph-th span{position:absolute;left:0;right:0;bottom:0;background:rgba(0,0,0,.55);color:#fff;font-size:9.5px;padding:1px 3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .ph-q{font-size:11px;margin-top:4px}
@@ -177,11 +187,13 @@
       needSel: "Изберете обект(и) в модела, за да добавите снимки към тях.", to: "Към", sel: "За избраното", all: "Всички по дни", filter: "Филтър (такт / марка)",
       none: "Няма снимки.", noneSel: "Няма снимки за избраното.", up: "Качване", done: "качена", fail: "грешка", show: "Покажи в модела", del: "Изтрий",
       delAsk: "Да се изтрие ли снимката? Това не може да се отмени.", yes: "Да, изтрий", no: "Не", close: "Затвори", orig: "оригинал",
+      markFor: "За приемане…", pick: "Избери", pickDone: "Отказ", picked: "Избрани", apply: "Приложи", choosePurpose: "Изберете за какво (кофраж / армировка).",
       native: "Връзка в Connect", openNew: "Отвори в нов прозорец", zoom: "Щракнете за увеличение", noNative: "без връзка в Connect (само в нашия списък)", loading: "Зареждане…" },
     en: { title: "Photos", add: "Add photos", camera: "Camera", drop: "Drop photos here or choose files", caption: "Caption (optional)",
       needSel: "Select object(s) in the model to add photos to them.", to: "To", sel: "For the selection", all: "All by day", filter: "Filter (pour / mark)",
       none: "No photos.", noneSel: "No photos for the selection.", up: "Uploading", done: "uploaded", fail: "failed", show: "Show in model", del: "Delete",
       delAsk: "Delete this photo? This cannot be undone.", yes: "Yes, delete", no: "No", close: "Close", orig: "original",
+      markFor: "For acceptance…", pick: "Select", pickDone: "Cancel", picked: "Selected", apply: "Apply", choosePurpose: "Choose what for (formwork / rebar).",
       native: "Linked in Connect", openNew: "Open in new window", zoom: "Click to zoom", noNative: "not linked in Connect (our list only)", loading: "Loading…" },
   };
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -191,12 +203,13 @@
    * opts: el, api (Workspace API), getToken(refresh), coreBase, project {id}, user (display name), client (PsetClient), libId,
    *       canAdd, canDeleteAny, lang ("bg"|"en"), targets(): [{modelId, id, guid, label}] (current selection),
    *       onStatus(text, bad), purposes: [{id, bg, en}] (optional upload purposes besides "general"),
-   *       onUploaded({purpose, fileIds, objects}) (optional; after each batch with a purpose)
+   *       onUploaded({purpose, fileIds, objects}) (optional; after each batch with a purpose, and when existing photos
+   *       are marked for a purpose afterwards – from the photo viewer or with "Избери" on several photos)
    */
   function mount(opts) {
     const L = () => T[opts.lang === "en" ? "en" : "bg"];
     const core = opts.core || coreClient(opts.coreBase, opts.getToken);
-    const st = { records: [], view: "sel", filter: "", queue: [], urls: new Map(), folders: new Map(), loaded: false, open: null, confirm: false };
+    const st = { records: [], view: "sel", filter: "", queue: [], urls: new Map(), folders: new Map(), loaded: false, open: null, confirm: false, picking: false, picked: new Set() };
     const say = (t, bad) => opts.onStatus && opts.onStatus(t, bad);
     if (!document.getElementById("ph-css")) { const s = document.createElement("style"); s.id = "ph-css"; s.textContent = CSS; document.head.appendChild(s); }
 
@@ -209,7 +222,12 @@
     }
 
     // folders _ArstenDocs/Photos/<day>, created when missing
-    async function folderFor(day) {
+    const folderJobs = new Map();
+    function folderFor(day) {   // memoised as a promise: parallel uploads of the same day share one lookup / create
+      if (!folderJobs.has(day)) folderJobs.set(day, folderLookup(day).catch((e) => { folderJobs.delete(day); throw e; }));
+      return folderJobs.get(day);
+    }
+    async function folderLookup(day) {
       if (st.folders.has(day)) return st.folders.get(day);
       let parent = st.rootId;
       if (!parent) { const p = await core.req(`projects/${encodeURIComponent(opts.project.id)}`); parent = st.rootId = p.rootId; }
@@ -270,9 +288,11 @@
       const purpose = ((opts.el.querySelector(".ph-purpose") || {}).value || "");
       const uploaded = [];
       const list = [...files].filter((f) => /^image\//.test(f.type) || /\.(jpe?g|png|heic|webp)$/i.test(f.name));
-      for (const f of list) st.queue.push({ name: f.name, state: L().up + "…", file: f });
+      const mine = list.map((f) => ({ name: f.name, state: L().up + "…", file: f }));
+      st.queue.push(...mine);
+      st.caption = "";
       render();
-      for (const q of st.queue.filter((x) => x.file)) {
+      for (const q of mine) {
         const file = q.file; q.file = null;
         try {
           const img = await prepareImage(file);
@@ -299,7 +319,8 @@
 
     async function urlOf(r) {
       if (st.urls.has(r.file_id)) return st.urls.get(r.file_id);
-      const p = core.req(`files/fs/${encodeURIComponent(r.file_id)}/downloadurl`).then((d) => (d && (d.url || d.downloadUrl || d.href)) || "");
+      const p = core.req(`files/fs/${encodeURIComponent(r.file_id)}/downloadurl`).then((d) => (d && (d.url || d.downloadUrl || d.href)) || "")
+        .catch((e) => { st.urls.delete(r.file_id); throw e; });
       st.urls.set(r.file_id, p);
       return p;
     }
@@ -326,10 +347,32 @@
       st.open = null; st.confirm = false;
       render();
     }
+    /** Existing photos -> a purpose (e.g. acceptance). Each photo keeps its own objects, so it joins its own pour's request. */
+    async function mark(recs, purpose) {
+      if (!purpose || !recs.length) return;
+      for (const r of recs) {
+        const rec = Object.assign({}, r, { purpose }); delete rec.link;
+        await opts.client.write(opts.libId, DEF_ID, r.link, rec);
+        r.purpose = purpose;
+      }
+      if (opts.onUploaded) {
+        const byKey = new Map();   // one call per set of objects, so photos of different pours stay apart
+        for (const r of recs) {
+          const objs = parseObjects(r.objects).map((o) => ({ modelId: o.modelId, guid: o.guid, label: o.label || r.labels || "" }));
+          const k = objs.map((o) => o.guid).sort().join(",");
+          if (!byKey.has(k)) byKey.set(k, { objects: objs, fileIds: [] });
+          byKey.get(k).fileIds.push(r.file_id);
+        }
+        for (const g of byKey.values()) await opts.onUploaded({ purpose, fileIds: g.fileIds, objects: g.objects });
+      }
+      st.picking = false; st.picked.clear();
+      render();
+    }
+    const markSelect = (cls) => `<select class="${cls}"><option value="">${esc(L().markFor)}</option>${(opts.purposes || []).map((p) => `<option value="${esc(p.id)}">${esc(opts.lang === "en" ? p.en : p.bg)}</option>`).join("")}</select>`;
     const canDelete = (r) => opts.canDeleteAny || (opts.canAdd && r.by && r.by === opts.user);
 
     function thumbs(items) {
-      return `<div class="ph-grid">${items.map((r) => `<button class="ph-th" data-ph="${esc(r.file_id)}" title="${esc(r.caption || r.labels)}"><img alt="" data-src="${esc(r.file_id)}"><span>${esc((r.taken || "").slice(11, 16))} ${esc(r.labels)}</span></button>`).join("")}</div>`;
+      return `<div class="ph-grid">${items.map((r) => `<button class="ph-th${st.picked.has(r.file_id) ? " ph-pick" : ""}" data-ph="${esc(r.file_id)}" title="${esc(r.caption || r.labels)}"><img alt="" data-src="${esc(r.file_id)}"><span>${esc((r.taken || "").slice(11, 16))} ${esc(r.labels)}</span></button>`).join("")}</div>`;
     }
 
     function render() {
@@ -349,29 +392,33 @@
         ${opts.canAdd ? `<div class="ph-drop">${objs.length ? `<div>${l.to}: <b>${esc(labels.join(", ") || objs.length)}</b> (${objs.length})</div>` : `<div>${l.needSel}</div>`}
           <div>${l.drop}</div>
           ${(opts.purposes || []).length ? `<div class="bar" style="justify-content:center"><select class="ph-purpose"><option value="">${opts.lang === "en" ? "General" : "Обща"}</option>${opts.purposes.map((p) => `<option value="${esc(p.id)}"${st.purpose === p.id ? " selected" : ""}>${esc(opts.lang === "en" ? p.en : p.bg)}</option>`).join("")}</select></div>` : ""}
-          <div class="bar" style="justify-content:center"><input type="text" class="ph-cap" placeholder="${esc(l.caption)}" style="flex:1;min-width:120px">
+          <div class="bar" style="justify-content:center"><input type="text" class="ph-cap" placeholder="${esc(l.caption)}" value="${esc(st.caption || "")}" style="flex:1;min-width:120px">
             <label class="small" style="border:1px solid var(--line,#d9d5cc);padding:2px 7px;cursor:pointer">${l.add}<input type="file" class="ph-file" accept="image/*" multiple hidden></label>
             <label class="small" style="border:1px solid var(--line,#d9d5cc);padding:2px 7px;cursor:pointer">${l.camera}<input type="file" class="ph-cam" accept="image/*" capture="environment" hidden></label></div>
           ${st.queue.length ? `<div class="ph-q">${st.queue.slice(-6).map((q) => `<div class="${q.bad ? "bad" : "sub"}">${esc(q.name)}: ${esc(q.state)}</div>`).join("")}</div>` : ""}</div>` : ""}
         <div class="bar"><button class="small ${st.view === "sel" ? "" : "secondary"}" data-phv="sel">${l.sel}</button><button class="small ${st.view === "all" ? "" : "secondary"}" data-phv="all">${l.all}</button>
-          ${st.view === "all" ? `<input type="text" class="ph-filter" placeholder="${esc(l.filter)}" value="${esc(st.filter)}" style="flex:1;min-width:90px">` : ""}</div>
+          ${st.view === "all" ? `<input type="text" class="ph-filter" placeholder="${esc(l.filter)}" value="${esc(st.filter)}" style="flex:1;min-width:90px">` : ""}
+          ${opts.canAdd && (opts.purposes || []).length ? `<button class="small ${st.picking ? "" : "secondary"}" data-phpick="1">${st.picking ? l.pickDone : l.pick}</button>` : ""}</div>
+        ${st.picking ? `<div class="bar"><span class="sub">${l.picked}: ${st.picked.size}</span>${markSelect("ph-markmany")}<button class="small" data-phapply="1"${st.picked.size ? "" : " disabled"}>${l.apply}</button></div>` : ""}
         <div class="ph-list">${body}</div>
         ${st.open ? box(st.open) : ""}`;
       wire();
-      opts.el.querySelectorAll("img[data-src]").forEach((img) => { const r = st.records.find((x) => x.file_id === img.dataset.src); if (r) urlOf(r).then((u) => { if (!u) return; img.src = u; const a = img.closest(".ph-box") && opts.el.querySelector(".ph-open"); if (a) a.href = u; }).catch(() => {}); });
+      opts.el.querySelectorAll("img[data-src]").forEach((img) => { const r = st.records.find((x) => x.file_id === img.dataset.src); if (r) urlOf(r).then((u) => { if (!u) return; img.src = u; const a = img.closest(".ph-box") && opts.el.querySelector(".ph-open"); if (a) { a.href = u; a.style.opacity = ""; a.style.pointerEvents = ""; } }).catch(() => {}); });
       wireZoom(opts.el.querySelector(".ph-view"));
     }
     function box(r) {
       const l = L();
       return `<div class="ph-box"><div class="ph-view" title="${esc(L().zoom)}"><img alt="" data-src="${esc(r.file_id)}"></div>
-        <div class="ph-meta"><b>${esc(r.labels)}</b>${r.purpose ? ` · ${esc(((opts.purposes || []).find((p) => p.id === r.purpose) || {})[opts.lang === "en" ? "en" : "bg"] || r.purpose)}` : ""}${r.caption ? " – " + esc(r.caption) : ""}<br>${esc(r.taken.replace("T", " ").slice(0, 16))} · ${esc(r.by)} · ${esc(r.size)} · ${r.links ? l.native : l.noNative}</div>
+        <div class="ph-meta"><b>${esc(r.labels)}</b>${r.purpose ? ` · ${esc(((opts.purposes || []).find((p) => p.id === r.purpose) || {})[opts.lang === "en" ? "en" : "bg"] || r.purpose)}` : ""}${r.caption ? " – " + esc(r.caption) : ""}<br>${esc(String(r.taken || "").replace("T", " ").slice(0, 16))} · ${esc(r.by)} · ${esc(r.size)} · ${r.links ? l.native : l.noNative}</div>
         <div class="ph-acts">${st.confirm ? `<span>${l.delAsk}</span><button class="small ph-bad" data-pha="yes">${l.yes}</button><button class="small" data-pha="no">${l.no}</button>`
-          : `${canDelete(r) ? `<button class="small ph-bad" data-pha="del">${l.del}</button>` : ""}<span class="ph-r"><a class="ph-open" target="_blank" rel="noopener" href="#">${l.openNew}</a><button class="small" data-pha="show">${l.show}</button><button class="small" data-pha="close">${l.close}</button></span>`}</div></div>`;
+          : `${canDelete(r) ? `<button class="small ph-bad" data-pha="del">${l.del}</button>` : ""}<span class="ph-r">${opts.canAdd && (opts.purposes || []).length ? markSelect("ph-markone") : ""}<a class="ph-open" target="_blank" rel="noopener" style="opacity:.5;pointer-events:none">${l.openNew}</a><button class="small" data-pha="show">${l.show}</button><button class="small" data-pha="close">${l.close}</button></span>`}</div></div>`;
     }
     function wire() {
       const el = opts.el, g = (fn) => () => Promise.resolve().then(fn).catch((e) => say(e.message, true));
       const pick = (inp) => { if (inp) inp.onchange = (e) => { const f = [...e.target.files]; e.target.value = ""; g(() => addFiles(f))(); }; };
       pick(el.querySelector(".ph-file")); pick(el.querySelector(".ph-cam"));
+      const cap = el.querySelector(".ph-cap");
+      if (cap) cap.oninput = () => { st.caption = cap.value; };
       const pu = el.querySelector(".ph-purpose");
       if (pu) pu.onchange = () => { st.purpose = pu.value; };
       const drop = el.querySelector(".ph-drop");
@@ -383,7 +430,19 @@
       el.querySelectorAll("[data-phv]").forEach((b) => { b.onclick = () => { st.view = b.dataset.phv; render(); }; });
       const fl = el.querySelector(".ph-filter");
       if (fl) fl.oninput = () => { st.filter = fl.value; const pos = fl.selectionStart; render(); const n = opts.el.querySelector(".ph-filter"); if (n) { n.focus(); n.setSelectionRange(pos, pos); } };
-      el.querySelectorAll("[data-ph]").forEach((b) => { b.onclick = () => { st.open = st.records.find((x) => x.file_id === b.dataset.ph); st.confirm = false; render(); }; });
+      el.querySelectorAll("[data-ph]").forEach((b) => { b.onclick = () => {
+        if (st.picking) { const id = b.dataset.ph; if (st.picked.has(id)) st.picked.delete(id); else st.picked.add(id); render(); return; }
+        st.open = st.records.find((x) => x.file_id === b.dataset.ph); st.confirm = false; render(); }; });
+      const pk = el.querySelector("[data-phpick]");
+      if (pk) pk.onclick = () => { st.picking = !st.picking; st.picked.clear(); render(); };
+      const ap = el.querySelector("[data-phapply]");
+      if (ap) ap.onclick = g(async () => {
+        const purpose = (el.querySelector(".ph-markmany") || {}).value;
+        if (!purpose) return say(L().choosePurpose, true);
+        await mark(st.records.filter((r) => st.picked.has(r.file_id)), purpose);
+      });
+      const one = el.querySelector(".ph-markone");
+      if (one) one.onchange = g(async () => { if (one.value && st.open) await mark([st.open], one.value); });
       el.querySelectorAll("[data-pha]").forEach((b) => {
         b.onclick = g(async () => {
           const a = b.dataset.pha, r = st.open;

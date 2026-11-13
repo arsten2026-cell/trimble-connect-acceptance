@@ -66,13 +66,27 @@
     try { await state.api.viewer.setCamera({ modelObjectIds: sel }, { animationTime: 400 }); } catch {}
   }
 
+  let busy = false;
   async function decide(r, decision) {
+    if (busy) return;
     if (!canApprove()) return setStatus(L2("Само групата 4.1-STRUCTURAL DESIGNER може да приема.", "Only the group 4.1-STRUCTURAL DESIGNER can decide."), true);
     const comment = (($("c_" + r.link) || {}).value || "").trim();
-    let props;
-    try { props = ACC.decide(r, { decision, comment, by: state.user }); }
+    try { ACC.decide(r, { decision, comment, by: state.user }); }
     catch (e) { if (e.code === "comment") return setStatus(L2("Напишете коментар (забележки / причина).", "Write a comment (remarks / reason)."), true); throw e; }
-    await state.client.write(state.lib.id, ACC.DEF_ID, r.link, props);
+    busy = true;
+    let props;
+    try {
+      // decide on the FRESH server copy; if photos or status changed since it was shown, show it again first
+      const got = await state.client.readMany(state.lib.id, ACC.DEF_ID, [r.link]);
+      const fresh = got.get(r.link);
+      if (!fresh || fresh.status !== r.status || (fresh.photos || "") !== (r.photos || "")) {
+        await load();
+        return setStatus(L2("Заявката е променена междувременно (нови снимки или решение) – прегледайте я отново.", "The request changed meanwhile (new photos or a decision) – please look again."), true);
+      }
+      props = ACC.decide(Object.assign({ link: r.link }, fresh), { decision, comment, by: state.user });
+      const rec = Object.assign({}, props); delete rec.link;
+      await state.client.replace(state.lib.id, ACC.DEF_ID, r.link, rec);
+    } finally { busy = false; }
     Object.assign(r, props);
     setStatus(`${r.pour} · ${ACC.STEPS[r.step][lang]}: ${ACC.STATUS[decision][lang]}`);
     render();
