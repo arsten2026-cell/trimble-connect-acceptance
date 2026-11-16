@@ -52,6 +52,7 @@
     setStatus(L2(`${state.acc.length} заявки · ${open} чакат`, `${state.acc.length} requests · ${open} waiting`));
     render();
     if (state.coloured) await applyColours();
+    sweepTodos().catch((e) => console.error(e));
   }
 
   async function urlOf(fileId) {
@@ -95,9 +96,42 @@
       await state.client.replace(state.lib.id, ACC.DEC_ID, r.link, props);
     } finally { busy = false; }
     Object.assign(r, { status: props.status, decided: props.decided, decided_by: props.decided_by, comment: props.comment, declog: props.log });
-    setStatus(`${r.pour} · ${ACC.STEPS[r.step][lang]}: ${ACC.STATUS[decision][lang]}`);
+    let msg = `${r.pour} · ${ACC.STEPS[r.step][lang]}: ${ACC.STATUS[decision][lang]}`, bad = false;
     render();
+    // the last decision of a ToDo closes that ToDo in Connect (user 16.11.2026); the decision itself is already saved
+    try { if (await closeTodo(r.todo_id)) msg += L2(" · задачата в Connect е затворена", " · the Connect ToDo is closed"); }
+    catch (e) { console.error(e); bad = true; msg += L2(` · задачата в Connect НЕ е затворена (${errText(e)}) – затворете я ръчно`, ` · the Connect ToDo was NOT closed (${errText(e)}) – close it by hand`); }
+    setStatus(msg, bad);
     if (state.coloured) await applyColours();
+  }
+
+  // ---------- closing the Connect ToDo ----------
+  // A ToDo closes once every request sent with it has a decision: a comment with the results, then status CLOSED
+  // (legacy Core API 2.0: PATCH /todos/{id}, then POST /comments). A ToDo already closed (e.g. by hand) is left alone.
+  // A stale list can only keep a ToDo open, never close it early: decisions are not undone, and a reopened request
+  // has its todo_id cleared.
+  const todoTried = new Set();
+  async function closeTodo(todoId) {
+    const o = ACC.todoOutcome(state.acc, todoId, lang);
+    if (!o || todoTried.has(todoId)) return false;
+    todoTried.add(todoId);
+    try {
+      const c = core(), path = `todos/${encodeURIComponent(todoId)}`;
+      const t = await c.req(path);
+      if (t && String(t.status || "").toUpperCase() === "CLOSED") return false;
+      await c.req(path, "PATCH", { status: "CLOSED" });
+      // the comment comes after the close, so a failed close retried later never posts it twice; a failed comment is only logged
+      try { await c.req("comments", "POST", { objectId: todoId, objectType: "TODO", description: o.comment }); } catch (e) { console.error("ToDo comment " + todoId, e); }
+      return true;
+    } catch (e) { if (e.status === 404) return false; todoTried.delete(todoId); throw e; }   // 404: the ToDo was deleted
+  }
+  /** On load (approvers only): close ToDos whose requests were all decided before auto-close existed, or whose closing failed. */
+  async function sweepTodos() {
+    if (!canApprove()) return;
+    const ids = [...new Set(state.acc.map((r) => r.todo_id).filter(Boolean))].filter((id) => !todoTried.has(id) && ACC.todoOutcome(state.acc, id, lang));
+    let n = 0;
+    for (const id of ids) { try { if (await closeTodo(id)) n++; } catch (e) { console.error("ToDo " + id, e); } }
+    if (n) setStatus($("status").textContent + L2(` · затворени задачи в Connect: ${n}`, ` · Connect ToDos closed: ${n}`));
   }
 
   // ---------- colours in the model ----------
