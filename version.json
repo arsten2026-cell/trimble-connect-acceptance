@@ -1,0 +1,16 @@
+{
+  "panel": "acceptance",
+  "repo": "arsten2026-cell/trimble-connect-acceptance",
+  "id": "736301e560",
+  "built": "2026-11-16T21:53:08.034Z",
+  "files": {
+    "app.js": "7845de6167",
+    "psetapi.js": "cb56112323",
+    "arsten-access.js": "c29c3b3f4f",
+    "arsten-photos.js": "f0a7981489",
+    "arsten-acceptance.js": "585d7387c0",
+    "manifest.json": "e07a806f02",
+    "icon.svg": "b3d7fe5668",
+    "index.html": "0192524a9a"
+  }
+}
