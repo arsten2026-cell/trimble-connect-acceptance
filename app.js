@@ -9,22 +9,45 @@
   const LIB_NAMES = ["CIP/Монолитно", "Arsten Pour Status"];
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-  let lang = (() => { try { return localStorage.getItem("arsten.acceptance.lang") || "bg"; } catch { return "bg"; } })();
+  // one language for all tools (A10): shared key "arsten.lang" (shared/arsten-i18n.js), the old key read once
+  const I18N = window.ArstenI18n, OLD_LANG = ["arsten.acceptance.lang"];
+  let lang = I18N ? I18N.getLang(OLD_LANG) : "bg";
+  // one date format (round 14 M4): stored "2026-11-13 08:00" shown as 13.11.2026 08:00; history lines in Bulgarian (stored text unchanged)
+  const fmtWhen = (d) => (I18N ? I18N.fmtDate(d, lang, { time: true }) : String(d || ""));
+  const logShown = (text) => String(text || "").split("\n").map((l) => (I18N ? I18N.logText(l, lang) : l)).join("\n");
+  /** A card's history, translated. Round 17 L7: built only for a history that is open ("История"), not for every card on
+   *  every render and filter keystroke. */
+  const logOf = (r) => logShown([r.log, r.declog].filter(Boolean).join("\n"));
   const L2 = (b, e) => (lang === "bg" ? b : e);
-  const state = { api: null, client: null, project: null, user: "", access: null, lib: null, acc: [], photos: new Map(), tab: "open", filter: "", urls: new Map(), open: null, busy: false, coloured: true, colourStep: "all" };   // colouring on by default (owner, 17.11.2026)
-  const setStatus = (t, bad) => { $("status").textContent = t || ""; $("status").className = "status" + (bad ? " bad" : ""); };
+  // counted forms (round 19 L6): countWord(1, "запис", "записа", "record", "records") = "1 запис"
+  const countWord = (n, one, many, en1, enN) => `${n} ${lang === "bg" ? (Math.abs(Number(n)) === 1 ? one : many) : (Math.abs(Number(n)) === 1 ? en1 : enN)}`;
+  const state = { api: null, client: null, project: null, user: "", access: null, lib: null, acc: [], photos: new Map(), tab: "open", filter: "", urls: new Map(), open: null, busy: false, coloured: true, colourStep: "all", logOpen: new Set() };   // logOpen: links whose "История" is open (round 17 L7); colouring on by default (owner, 17.11.2026)
+  // t may be a function: then it is built again in the new language after a language switch (round 19 L4)
+  let statusAgain = null;
+  const setStatus = (t, bad) => { statusAgain = typeof t === "function" ? { t, bad } : null; if (typeof t === "function") t = t(); $("status").textContent = t || ""; $("status").className = "status" + (bad ? " bad" : ""); };
+  const relabelStatus = () => { if (statusAgain) setStatus(statusAgain.t, statusAgain.bad); if (window.ArstenDiag && ArstenDiag.relabel) ArstenDiag.relabel(); };
   const errText = (e) => (e && (e.message || e.toString())) || String(e);
-  const guarded = (fn) => Promise.resolve().then(fn).catch((e) => { console.error(e); setStatus(errText(e), true); });
+  const guarded = (fn) => Promise.resolve().then(fn).catch((e) => { console.error(e); setStatus(I18N ? I18N.err(errText(e), lang) : errText(e), true); });
 
   // ---------- access token ----------
   let token = null, waiters = [];
   function onToken(tk) { token = tk; const w = waiters; waiters = []; w.forEach((f) => f(tk)); }
+  // Round 17 L3 (the round 12 L6 fix of Монолитен бетон / Стомана): the waiter is registered before asking (the token
+  // event may come while requestPermission runs). When Connect returns the token directly, refuses or throws, the waiter
+  // and its 60 s timer are dropped, so no stray "No access token" rejection is logged a minute later.
   async function getToken(refresh) {
     if (token && !refresh) return token;
-    const p = new Promise((resolve, reject) => { waiters.push(resolve); setTimeout(() => reject(new Error("No access token from Trimble Connect")), 60000); });
-    const r = await state.api.extension.requestPermission("accesstoken");
-    if (r === "denied") throw new Error("Access to Trimble Connect data was denied for this extension.");
-    if (r && r !== "pending" && r !== "granted") { token = r; return r; }
+    let timer = 0, done = null;
+    const p = new Promise((resolve, reject) => {
+      done = (tk) => { clearTimeout(timer); resolve(tk); };
+      waiters.push(done);
+      timer = setTimeout(() => { waiters = waiters.filter((f) => f !== done); reject(new Error(L2("Trimble Connect не даде ключ за достъп", "No access token from Trimble Connect"))); }, 60000);
+    });
+    const drop = () => { clearTimeout(timer); waiters = waiters.filter((f) => f !== done); p.catch(() => {}); };
+    let r;
+    try { r = await state.api.extension.requestPermission("accesstoken"); } catch (e) { drop(); throw e; }
+    if (r === "denied") { drop(); throw new Error(L2("Достъпът до данните в Trimble Connect е отказан за това разширение.", "Access to Trimble Connect data was denied for this extension.")); }
+    if (r && r !== "pending" && r !== "granted") { drop(); token = r; return r; }
     return p;
   }
   const core = () => window.ARSTEN_PHOTOS_CORE || PH.coreClient(ArstenAccess.coreBase(state.project.location), getToken);
@@ -34,6 +57,7 @@
   async function load() {
     setStatus(L2("Зареждане…", "Loading…"));
     const found = await state.client.findLibrary(state.project.id, LIB_NAMES);
+    if (!found.lib && found.denied) console.warn("library not readable", LIB_NAMES[0], JSON.stringify({ denied: found.denied }));   // round 19 M1: into the diagnostics
     if (!found.lib) return setStatus(L2("Няма библиотека CIP/Монолитно в проекта.", "No library CIP/Монолитно in the project."), true);
     state.lib = found.lib;
     const a = await state.client.listAll(state.lib.id, ACC.DEF_ID, ACC.prefix(state.project.id));
@@ -49,7 +73,7 @@
     } catch (e) { console.error(e); }
     $("main").hidden = false;
     const open = state.acc.filter((r) => r.status === "open").length;
-    setStatus(L2(`${state.acc.length} заявки · ${open} чакат`, `${state.acc.length} requests · ${open} waiting`));
+    setStatus(() => `${countWord(state.acc.length, "заявка", "заявки", "request", "requests")} · ${open} ${L2(open === 1 ? "чака" : "чакат", "waiting")}`);
     render();
     if (state.coloured) await applyColours();
     sweepTodos().catch((e) => console.error(e));
@@ -153,13 +177,18 @@
     const ids = [...new Set(state.acc.map((r) => r.todo_id).filter(Boolean))].filter((id) => !todoTried.has(id) && !isRefused(id) && ACC.todoOutcome(state.acc, id, lang));
     let n = 0, refused = 0;
     for (const id of ids) { try { if (await closeTodo(id)) n++; } catch (e) { if (e.refused) refused++; console.error("ToDo " + id, e); } }
-    if (n) setStatus($("status").textContent + L2(` · затворени задачи в Connect: ${n}`, ` · Connect ToDos closed: ${n}`));
-    if (refused) setStatus($("status").textContent + " · " + (refused > 1 ? `${refused} × ` : "") + REFUSED_TEXT[lang === "bg" ? "bg" : "en"], true);
+    // round 19 L4: appended to the load's line so that it still follows a language switch
+    const base = statusAgain ? statusAgain.t : null, was = $("status").textContent;
+    const head = () => (base ? base() : was);
+    if (n) setStatus(() => head() + L2(` · затворени задачи в Connect: ${n}`, ` · Connect ToDos closed: ${n}`));
+    const withClosed = statusAgain ? statusAgain.t : head;
+    if (refused) setStatus(() => withClosed() + " · " + (refused > 1 ? `${refused} × ` : "") + REFUSED_TEXT[lang === "bg" ? "bg" : "en"], true);
   }
 
   // ---------- colours in the model ----------
-  // За приемане orange, Приети green, Приети със забележки light green, Не се приемат red; everything else grey, see-through.
-  const LEGEND = [["open", "За приемане", "Awaiting acceptance"], ["approved", "Приети", "Accepted"], ["remarks", "Приети със забележки", "Accepted with remarks"], ["rejected", "Не се приемат", "Rejected"]];
+  // Чака приемане orange, Одобрено green, Одобрено със забележки light green, Не се приема red; everything else grey, see-through.
+  // The legend uses the same words as the cards (ACC.STATUS, round 14 L6).
+  const LEGEND = ["open", "approved", "remarks", "rejected"].map((s) => [s, ACC.STATUS[s].bg, ACC.STATUS[s].en]);
   const OTHER = { color: "#BDBDBD", opacity: 0.18 };
   async function applyColours() {
     const v = state.api.viewer;
@@ -206,13 +235,13 @@
            <button class="small no" data-d="rejected" data-l="${esc(r.link)}">${L2("Не се приема", "Reject")}</button></div>` : "";
     return `<div class="card" style="--c:${s.colour}">
       <div class="hd"><b>${esc(r.pour)}</b><span>${esc(ACC.STEPS[r.step] ? ACC.STEPS[r.step][lang] : r.step)}</span><span class="st">${esc(s[lang])}</span></div>
-      <div class="sub">${L2("Заявено", "Requested")}: ${esc(r.requested)} · ${esc(r.requested_by)}${r.sent ? ` · ${L2("изпратено", "sent")} ${esc(r.sent)}` : ` · ${L2("неизпратено", "not sent")}`}</div>
-      ${r.decided ? `<div class="sub">${esc(s[lang])}: ${esc(r.decided)} · ${esc(r.decided_by)}${r.comment ? ` – „${esc(r.comment)}“` : ""}</div>` : ""}
+      <div class="sub">${L2("Заявено", "Requested")}: ${esc(fmtWhen(r.requested))} · ${esc(r.requested_by)}${r.sent ? ` · ${L2("изпратено към проектанта", "sent to the designer")} ${esc(fmtWhen(r.sent))}` : ` · ${L2("не е изпратено към проектанта", "not sent to the designer yet")}`}</div>
+      ${r.decided ? `<div class="sub">${esc(s[lang])}: ${esc(fmtWhen(r.decided))} · ${esc(r.decided_by)}${r.comment ? ` – „${esc(r.comment)}“` : ""}</div>` : ""}
       ${goneN ? `<div class="sub bad">${goneN} ${L2("снимки са изтрити", "photos were deleted")}</div>` : ""}
       <div class="grid">${photos.map((id) => `<button class="th" data-ph="${esc(id)}" data-l="${esc(r.link)}"><img alt="" data-src="${esc(id)}"></button>`).join("") || `<span class="sub">${L2("Няма снимки.", "No photos.")}</span>`}</div>
       <div class="bar"><button class="small secondary" data-show="${esc(r.link)}">${L2("Покажи в модела", "Show in model")}</button>
         <button class="small secondary" data-log="${esc(r.link)}">${L2("История", "History")}</button></div>
-      <div class="log" id="log_${esc(r.link)}" hidden>${esc([r.log, r.declog].filter(Boolean).join("\n"))}</div>
+      <div class="log" id="log_${esc(r.link)}"${state.logOpen.has(r.link) ? "" : " hidden"}>${state.logOpen.has(r.link) ? esc(logOf(r)) : ""}</div>
       ${decideBox}</div>`;
   }
   function render() {
@@ -238,7 +267,7 @@
     const b = $("lightbox");
     if (!state.open) { b.innerHTML = ""; return; }
     const p = state.photos.get(state.open) || {};
-    b.innerHTML = `<div class="box"><div class="zview" title="${esc(L2("Щракнете за увеличение", "Click to zoom"))}"><img alt="" data-src="${esc(state.open)}"></div><div class="meta">${esc(p.labels || "")}${p.caption ? " – " + esc(p.caption) : ""}<br>${esc(String(p.taken || "").replace("T", " ").slice(0, 16))} · ${esc(p.by || "")}</div>
+    b.innerHTML = `<div class="box"><div class="zview" title="${esc(L2("Щракнете за увеличение", "Click to zoom"))}"><img alt="" data-src="${esc(state.open)}"></div><div class="meta">${esc(p.labels || "")}${p.caption ? " – " + esc(p.caption) : ""}<br>${esc(fmtWhen(String(p.taken || "").replace("T", " ").slice(0, 16)))} · ${esc(p.by || "")}</div>
       <div class="bar"><button class="small" id="boxClose">${L2("Затвори", "Close")}</button><a class="open" id="boxOpen" target="_blank" rel="noopener" href="#">${L2("Отвори в нов прозорец", "Open in new window")}</a></div></div>`;
     urlOf(state.open).then((u) => { const i = b.querySelector("img"); if (i && u) { i.src = u; const a = $("boxOpen"); if (a) a.href = u; } });
     PH.wireZoom(b.querySelector(".zview"));
@@ -250,7 +279,13 @@
     if (t.dataset.tab) { state.tab = t.dataset.tab; render(); }
     else if (t.dataset.ph) { state.open = t.dataset.ph; renderBox(); }
     else if (t.dataset.show) guarded(() => showInModel(state.acc.find((r) => r.link === t.dataset.show)));
-    else if (t.dataset.log) { const l = $("log_" + t.dataset.log); if (l) l.hidden = !l.hidden; }
+    else if (t.dataset.log) {
+      // round 17 L7: the history text is filled when it is opened (and kept open across re-renders), emptied when closed
+      const link = t.dataset.log, l = $("log_" + link), r = state.acc.find((x) => x.link === link);
+      const open = !state.logOpen.has(link);
+      if (open) state.logOpen.add(link); else state.logOpen.delete(link);
+      if (l) { l.textContent = open && r ? logOf(r) : ""; l.hidden = !open; }
+    }
     else if (t.dataset.d) guarded(() => decide(state.acc.find((r) => r.link === t.dataset.l), t.dataset.d));
   });
   $("filter").oninput = (e) => { state.filter = e.target.value; const pos = e.target.selectionStart; render(); $("filter").focus(); $("filter").setSelectionRange(pos, pos); };
@@ -267,19 +302,22 @@
   });
   $("chkColour").onchange = (e) => guarded(async () => { state.coloured = e.target.checked; await applyColours(); });
   $("selStep").onchange = (e) => guarded(async () => { state.colourStep = e.target.value; if (state.coloured) await applyColours(); });
-  $("selLang").onchange = (e) => { lang = e.target.value; try { localStorage.setItem("arsten.acceptance.lang", lang); } catch {} render(); };
+  $("selLang").onchange = (e) => { lang = I18N ? I18N.setLang(e.target.value) : e.target.value; render(); relabelStatus(); };
 
   async function start(api, client) {
     state.api = api;
+    if (window.ArstenDiag) ArstenDiag.set({ panel: "Приемане (acceptance)", lang: () => lang });   // round 19 M1: before the access check, so a denied screen's diagnostics name the panel
     const access = window.ARSTEN_DEMO ? (window.ARSTEN_DEMO_ACCESS || { allowed: true, role: "designer", caps: ["approve"] }) : await ArstenAccess.check({ api, getToken, app: "acceptance" });
+    if (I18N) { lang = await I18N.pickLang(api, access, OLD_LANG); $("selLang").value = lang; }   // stored choice, else the Connect user's language
     if (!access.allowed) { state.api = null; ArstenAccess.renderDenied(document.body, lang, access); return; }
     state.access = access;
     state.project = (await api.project.getProject()) || {};
     try { const u = await api.user.getUser(); state.user = [u.firstName, u.lastName].filter(Boolean).join(" ") || u.email || ""; } catch {}
     state.client = client || new A.PsetClient({ region: state.project.location || "europe", getToken });
+    if (window.ArstenDiag) ArstenDiag.set({ panel: "Приемане (acceptance)", projectId: state.project.id, redact: [state.user], lang: () => lang });   // A23
     await guarded(load);
   }
-  window.AcceptanceApp = { start, state };
+  window.AcceptanceApp = { start, state, _token: { getToken, onToken, waiting: () => waiters.length } };   // _token: tests (round 17 L3)
 
   let reloadTimer = null;
   function onEvent(event, data) {
@@ -289,10 +327,11 @@
   }
   if (window.parent === window) {
     if (/[?&]demo\b/.test(location.search)) { const s = document.createElement("script"); s.src = "demo.js?t=" + Date.now(); document.body.appendChild(s); }
-    else setStatus("Not inside Trimble Connect. Add this extension to a project and open it from the 3D viewer side panel.", true);
+    else setStatus(I18N ? I18N.word("notInside", lang) : "Not inside Trimble Connect.", true);
     return;
   }
+  if (I18N) setStatus(I18N.word("connecting", lang));
   TrimbleConnectWorkspace.connect(window.parent, onEvent, 30000)
     .then((api) => start(api))
-    .catch((e) => setStatus("Could not connect to Trimble Connect: " + errText(e), true));
+    .catch((e) => setStatus((I18N ? I18N.word("connectFail", lang) : "Could not connect to Trimble Connect") + ": " + errText(e), true));
 })();
