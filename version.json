@@ -1,16 +1,17 @@
 {
   "panel": "acceptance",
   "repo": "arsten2026-cell/trimble-connect-acceptance",
-  "id": "736301e560",
-  "built": "2026-11-16T21:53:08.034Z",
+  "id": "7b3e7e6514",
+  "built": "2026-11-17T00:22:28.919Z",
   "files": {
-    "app.js": "7845de6167",
-    "psetapi.js": "cb56112323",
-    "arsten-access.js": "c29c3b3f4f",
-    "arsten-photos.js": "f0a7981489",
-    "arsten-acceptance.js": "585d7387c0",
-    "manifest.json": "e07a806f02",
+    "app.js": "9b968ec791",
+    "arsten-perf.js": "21f7454938",
+    "psetapi.js": "3ecda69f18",
+    "arsten-access.js": "b6f528e602",
+    "arsten-photos.js": "0288cfea0d",
+    "arsten-acceptance.js": "3fb82d4a41",
+    "manifest.json": "eee3928a51",
     "icon.svg": "b3d7fe5668",
-    "index.html": "0192524a9a"
+    "index.html": "88d758873d"
   }
 }

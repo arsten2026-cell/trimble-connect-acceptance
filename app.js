@@ -11,7 +11,7 @@
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   let lang = (() => { try { return localStorage.getItem("arsten.acceptance.lang") || "bg"; } catch { return "bg"; } })();
   const L2 = (b, e) => (lang === "bg" ? b : e);
-  const state = { api: null, client: null, project: null, user: "", access: null, lib: null, acc: [], photos: new Map(), tab: "open", filter: "", urls: new Map(), open: null, busy: false, coloured: false, colourStep: "all" };
+  const state = { api: null, client: null, project: null, user: "", access: null, lib: null, acc: [], photos: new Map(), tab: "open", filter: "", urls: new Map(), open: null, busy: false, coloured: true, colourStep: "all" };   // colouring on by default (owner, 17.11.2026)
   const setStatus = (t, bad) => { $("status").textContent = t || ""; $("status").className = "status" + (bad ? " bad" : ""); };
   const errText = (e) => (e && (e.message || e.toString())) || String(e);
   const guarded = (fn) => Promise.resolve().then(fn).catch((e) => { console.error(e); setStatus(errText(e), true); });
@@ -100,7 +100,11 @@
     render();
     // the last decision of a ToDo closes that ToDo in Connect (user 16.11.2026); the decision itself is already saved
     try { if (await closeTodo(r.todo_id)) msg += L2(" · задачата в Connect е затворена", " · the Connect ToDo is closed"); }
-    catch (e) { console.error(e); bad = true; msg += L2(` · задачата в Connect НЕ е затворена (${errText(e)}) – затворете я ръчно`, ` · the Connect ToDo was NOT closed (${errText(e)}) – close it by hand`); }
+    catch (e) {
+      console.error(e); bad = true;
+      msg += e.refused ? " · " + REFUSED_TEXT[lang === "bg" ? "bg" : "en"]   // L7: 403, said once, never retried this session
+        : L2(` · задачата в Connect НЕ е затворена (${errText(e)}) – затворете я ръчно`, ` · the Connect ToDo was NOT closed (${errText(e)}) – close it by hand`);
+    }
     setStatus(msg, bad);
     if (state.coloured) await applyColours();
   }
@@ -111,9 +115,23 @@
   // A stale list can only keep a ToDo open, never close it early: decisions are not undone, and a reopened request
   // has its todo_id cleared.
   const todoTried = new Set();
+  // L7 (round 11): a close Connect refuses (403: e.g. the 4.1 assignee may not change the GC's ToDo) is remembered for the
+  // browser session (sessionStorage, per project), so neither a decision, "Обнови" nor a model reload asks again; the user
+  // is told once to close it by hand. Other errors are retried on the next load, as before.
+  const REFUSED_TEXT = { bg: "нямате право да затворите задачата – затворете я ръчно", en: "you have no right to close the ToDo – close it by hand" };
+  const refusedKey = () => `arsten.acceptance.todoRefused.${(state.project && state.project.id) || ""}`;
+  function refusedIds() {
+    try { const v = JSON.parse(sessionStorage.getItem(refusedKey()) || "[]"); return new Set(Array.isArray(v) ? v : []); } catch { return new Set(); }
+  }
+  const refusedMem = new Set();   // also kept here when sessionStorage is not available
+  const isRefused = (id) => refusedMem.has(id) || refusedIds().has(id);
+  function rememberRefused(id) {
+    refusedMem.add(id);
+    try { const s = refusedIds(); s.add(id); sessionStorage.setItem(refusedKey(), JSON.stringify([...s])); } catch {}
+  }
   async function closeTodo(todoId) {
     const o = ACC.todoOutcome(state.acc, todoId, lang);
-    if (!o || todoTried.has(todoId)) return false;
+    if (!o || todoTried.has(todoId) || isRefused(todoId)) return false;
     todoTried.add(todoId);
     try {
       const c = core(), path = `todos/${encodeURIComponent(todoId)}`;
@@ -123,15 +141,20 @@
       // the comment comes after the close, so a failed close retried later never posts it twice; a failed comment is only logged
       try { await c.req("comments", "POST", { objectId: todoId, objectType: "TODO", description: o.comment }); } catch (e) { console.error("ToDo comment " + todoId, e); }
       return true;
-    } catch (e) { if (e.status === 404) return false; todoTried.delete(todoId); throw e; }   // 404: the ToDo was deleted
+    } catch (e) {
+      if (e.status === 404) return false;   // 404: the ToDo was deleted
+      if (e.status === 403) { rememberRefused(todoId); e.refused = true; throw e; }   // stays in todoTried: never asked again
+      todoTried.delete(todoId); throw e;
+    }
   }
   /** On load (approvers only): close ToDos whose requests were all decided before auto-close existed, or whose closing failed. */
   async function sweepTodos() {
     if (!canApprove()) return;
-    const ids = [...new Set(state.acc.map((r) => r.todo_id).filter(Boolean))].filter((id) => !todoTried.has(id) && ACC.todoOutcome(state.acc, id, lang));
-    let n = 0;
-    for (const id of ids) { try { if (await closeTodo(id)) n++; } catch (e) { console.error("ToDo " + id, e); } }
+    const ids = [...new Set(state.acc.map((r) => r.todo_id).filter(Boolean))].filter((id) => !todoTried.has(id) && !isRefused(id) && ACC.todoOutcome(state.acc, id, lang));
+    let n = 0, refused = 0;
+    for (const id of ids) { try { if (await closeTodo(id)) n++; } catch (e) { if (e.refused) refused++; console.error("ToDo " + id, e); } }
     if (n) setStatus($("status").textContent + L2(` · затворени задачи в Connect: ${n}`, ` · Connect ToDos closed: ${n}`));
+    if (refused) setStatus($("status").textContent + " · " + (refused > 1 ? `${refused} × ` : "") + REFUSED_TEXT[lang === "bg" ? "bg" : "en"], true);
   }
 
   // ---------- colours in the model ----------
