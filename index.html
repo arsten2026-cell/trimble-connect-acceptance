@@ -49,6 +49,31 @@
   .sw { display:inline-block; width:10px; height:10px; margin-right:4px; vertical-align:-1px; border:1px solid rgba(0,0,0,.25); }
   label.chk { display:inline-flex; align-items:center; gap:5px; font-size:12px; }
   .log { white-space:pre-wrap; font-size:10.5px; color:var(--muted); margin-top:4px; }
+  /* decisions (sweep 18.11.2026): final, so larger buttons set apart, a tap arms ("Потвърди: …"), a second tap saves */
+  .bar.decide { gap:12px; }
+  button.dec { padding:5px 12px; font-size:12px; }
+  button.dec.armed { outline:3px solid var(--accent); outline-offset:1px; font-weight:600; }
+  button:disabled, textarea:disabled { opacity:.55; cursor:default; }
+  .saving { color:var(--ink); font-weight:600; margin-top:4px; }
+  .cerr { margin-top:2px; }
+  textarea[aria-invalid=true] { border-color:var(--bad); }
+  /* result toast at the bottom (sweep 18.11.2026, as in Монолитен бетон): always in the DOM for screen readers, visually
+     hidden when idle; taps pass through */
+  body { padding-bottom:calc(56px + env(safe-area-inset-bottom, 0px)); }
+  .toast { position:fixed; left:8px; bottom:calc(8px + env(safe-area-inset-bottom, 0px)); z-index:40; max-width:min(85%, 420px);
+    padding:8px 10px; font-size:13px; color:#fff; pointer-events:none; }
+  .toast:not(.show) { width:1px; height:1px; padding:0; overflow:hidden; clip:rect(0 0 0 0); clip-path:inset(50%); white-space:nowrap; }
+  .toast.ok { background:#2E7D32; }
+  .toast.bad { background:var(--bad); }
+  /* touch screens: ~40 px targets, 16 px inputs (no iOS zoom), as in Монолитен бетон */
+  @media (pointer: coarse) {
+    button, button.small, select, input[type=text] { min-height:40px; }
+    button.small { padding:6px 12px; font-size:14px; }
+    button.dec { min-height:40px; padding:8px 14px; font-size:14px; }
+    select, input[type=text], textarea { font-size:16px; }
+    input[type=checkbox] { width:22px; height:22px; }
+    label.chk { min-height:40px; font-size:14px; }
+  }
 </style>
 </head>
 <body>
@@ -64,14 +89,15 @@
   <div id="list"></div>
 </div>
 <div id="lightbox"></div>
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
 <script src="https://cdn.jsdelivr.net/npm/trimble-connect-workspace-api@0.3.38/dist/iife/trimbleconnect.workspace.api.js" integrity="sha384-lFiNt/56q6HnUNbuy0WHO3NP6BkQjY4EH8+5eELYVfnhkB42snRTmSa3UOAlX9gg" crossorigin="anonymous"></script>
 <script src="arsten-perf.js?v=21f7454938"></script>
 <script src="arsten-diag.js?v=bb0c6351fe"></script>
-<script src="arsten-i18n.js?v=de006467e2"></script>
-<script src="arsten-access.js?v=253829d007"></script>
-<script src="psetapi.js?v=f5bc3d57fb"></script>
-<script src="arsten-photos.js?v=fd69e17caf"></script>
-<script src="arsten-acceptance.js?v=3fb82d4a41"></script>
-<script src="app.js?v=a764b8787c"></script>
+<script src="arsten-i18n.js?v=c58f01c9fc"></script>
+<script src="arsten-access.js?v=fad565fcbe"></script>
+<script src="psetapi.js?v=970df94af2"></script>
+<script src="arsten-photos.js?v=58db357146"></script>
+<script src="arsten-acceptance.js?v=f8e113bc4d"></script>
+<script src="app.js?v=22a0c85747"></script>
 </body>
 </html>
